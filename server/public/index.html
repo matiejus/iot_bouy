@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>ESP Sensor Dashboard</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    body {
+      font-family: Arial;
+      max-width: 900px;
+      margin: 40px auto;
+    }
+    .card {
+      padding: 15px;
+      border: 1px solid #aaa;
+      margin-bottom: 15px;
+      border-radius: 10px;
+    }
+    .value {
+      font-size: 1.6em;
+    }
+    .section {
+      margin-top: 25px;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>ESP Sensor Dashboard</h1>
+
+  <!-- LIVE DATA -->
+  <div class="card">
+    <div><b>Temperature:</b> <span id="temp" class="value">--</span>°C</div>
+    <div><b>TDS Raw:</b> <span id="tds" class="value">--</span></div>
+    <div><b>Turbidity Raw:</b> <span id="turb" class="value">--</span></div>
+    <div><b>Device ID:</b> <span id="device" class="value">--</span></div>
+    <div style="margin-top:10px;"><button id="beaconBtn">Send Beacon Command</button> <span id="beaconStatus"></span></div>
+  </div>
+
+  <!-- DATE RANGE QUERY -->
+  <div class="card">
+    <h3>Query Historical Data</h3>
+    From: <input type="datetime-local" id="from">
+    To: <input type="datetime-local" id="to">
+    <button onclick="loadRange()">Load</button>
+  </div>
+
+  <!-- GRAPHS -->
+  <div class="section">
+    <h2>Temperature</h2>
+    <canvas id="tempChart" width="600" height="250"></canvas>
+  </div>
+
+  <div class="section">
+    <h2>TDS</h2>
+    <canvas id="tdsChart" width="600" height="250"></canvas>
+  </div>
+
+  <div class="section">
+    <h2>Turbidity</h2>
+    <canvas id="turbChart" width="600" height="250"></canvas>
+  </div>
+
+
+<script>
+  // DOM elements
+  const tempEl = document.getElementById("temp");
+  const tdsEl = document.getElementById("tds");
+  const turbEl = document.getElementById("turb");
+  const devEl = document.getElementById("device");
+
+  // Chart initialization
+  const tempChart = new Chart(document.getElementById("tempChart").getContext("2d"), {
+    type: "line",
+    data: { labels: [], datasets: [{ label: "°C", data: [], borderWidth: 2 }] }
+  });
+
+  const tdsChart = new Chart(document.getElementById("tdsChart").getContext("2d"), {
+    type: "line",
+    data: { labels: [], datasets: [{ label: "TDS Raw", data: [], borderWidth: 2 }] }
+  });
+
+  const turbChart = new Chart(document.getElementById("turbChart").getContext("2d"), {
+    type: "line",
+    data: { labels: [], datasets: [{ label: "Turb Raw", data: [], borderWidth: 2 }] }
+  });
+
+  // Fetch latest
+  async function updateLatest() {
+    const res = await fetch("/api/live/latest");
+    const data = await res.json();
+    if (!data) return;
+
+    tempEl.textContent = data.temp_c ?? "--";
+    tdsEl.textContent = data.tds_raw ?? "--";
+    turbEl.textContent = data.turb_raw ?? "--";
+    devEl.textContent = data.device_id ?? "--";
+  }
+
+  // Fetch last 50 and update all graphs
+  async function updateHistory() {
+    const res = await fetch("/api/history/latest50");
+    const rows = await res.json();
+
+    updateCharts(rows);
+  }
+
+  // Update all 3 charts from an array of DB rows
+  function updateCharts(rows) {
+    const labels = rows.map(r => r.timestamp.replace("T"," ").replace(".000Z",""));
+
+    tempChart.data.labels = labels;
+    tempChart.data.datasets[0].data = rows.map(r => r.temp_c);
+    tempChart.update();
+
+    tdsChart.data.labels = labels;
+    tdsChart.data.datasets[0].data = rows.map(r => r.tds_raw);
+    tdsChart.update();
+
+    turbChart.data.labels = labels;
+    turbChart.data.datasets[0].data = rows.map(r => r.turb_raw);
+    turbChart.update();
+  }
+
+  function loadRange() {
+    const from = document.getElementById("from").value;
+    const to = document.getElementById("to").value;
+
+    if (!from || !to) {
+      alert("Select both dates");
+      return;
+    }
+
+    // Redirect to the dedicated history page
+    window.location.href = `/history?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+  }
+
+
+
+  // Auto-refresh latest & recent history
+  function refresh() {
+    updateLatest();
+    updateHistory();
+  }
+
+  refresh();
+  setInterval(refresh, 3000);
+
+  // Beacon button handler
+  document.getElementById("beaconBtn").addEventListener("click", async () => {
+    const btn = document.getElementById("beaconBtn");
+    const status = document.getElementById("beaconStatus");
+    btn.disabled = true;
+    status.textContent = " Sending...";
+    try {
+      const res = await fetch('/api/command/beacon', { method: 'POST' });
+      const json = await res.json();
+      if (res.ok) {
+        status.textContent = " Sent";
+      } else {
+        status.textContent = ` Error: ${json.error || res.status}`;
+      }
+    } catch (err) {
+      status.textContent = " Network error";
+      console.error(err);
+    } finally {
+      btn.disabled = false;
+      setTimeout(() => status.textContent = '', 3000);
+    }
+  });
+</script>
+
+</body>
+</html>

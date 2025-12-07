@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>History Query</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+
+<h1>Historical Data</h1>
+
+<nav>
+    <a href="/">Live</a>
+</nav>
+
+<label>From: <input type="datetime-local" id="from"></label>
+<label>To: <input type="datetime-local" id="to"></label>
+<button id="load">Load</button>
+
+<div id="status"></div>
+
+<canvas id="chartTemp"></canvas>
+<canvas id="chartTDS"></canvas>
+<canvas id="chartTurb"></canvas>
+
+<script src="/js/history.js"></script>
+
+</body>
+</html>

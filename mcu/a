@@ -1,0 +1,140 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+
+// ===== CONFIG =====
+const char* ssid = "OpenWRT";
+const char* password = "dziumbras";
+
+const char* mqtt_server = "broker.hivemq.com";
+const uint16_t mqtt_port = 1883;
+const char* mqtt_user = "mqtt_user"; // set to nullptr or "" if none
+const char* mqtt_pass = "";
+const char* mqtt_topic = "sensors/matis/reading";
+
+unsigned long publishInterval = 30UL * 1000UL; // publish every 30s
+
+// Pins (use with caution; see notes below)
+const int TDS_PIN      = 4; // analog for TDS (user said pin 4)
+const int TURB_PIN     = 5; // analog for turbidity (user said pin 5)
+const int DS18B20_PIN  = 6; // digital 1-wire for DS18B20 (user said pin 6)
+// ===================
+
+// Globals
+WiFiClient espClient;
+PubSubClient mqtt(espClient);
+OneWire oneWire(DS18B20_PIN);
+DallasTemperature sensors(&oneWire);
+
+unsigned long lastPublish = 0;
+
+// helper to connect WiFi
+void connectWiFi() {
+  if (WiFi.status() == WL_CONNECTED) return;
+  Serial.printf("Connecting to WiFi %s\n", ssid);
+  WiFi.begin(ssid, password);
+
+  unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+    if (millis() - start > 15000) { // 15s timeout
+      Serial.println("\nWiFi connect timeout, retrying...");
+      WiFi.disconnect();
+      WiFi.reconnect();
+      start = millis();
+    }
+  }
+  Serial.println("\nWiFi connected, IP: " + WiFi.localIP().toString());
+}
+
+// helper to connect MQTT
+void reconnectMQTT() {
+  while (!mqtt.connected()) {
+    Serial.print("Connecting to MQTT...");
+    String clientId = "esp-client-";
+    clientId += String((uint32_t)ESP.getEfuseMac(), HEX);
+    if (mqtt.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
+      Serial.println("connected");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(mqtt.state());
+      Serial.println(" try again in 3s");
+      delay(3000);
+    }
+  }
+}
+
+// read analog safely and return raw ADC (0..4095) and voltage
+struct AnalogReading { int raw; float voltage; };
+AnalogReading readAnalogSafe(int pin) {
+  AnalogReading r = {0, 0.0f};
+  // On ESP32 analogRead returns 0..4095 by default
+  // If using a different board, these numbers may vary.
+  // Wrap in try to avoid crashing on unusable pins (GPIO6..11 often tied to flash)
+  r.raw = analogRead(pin);
+  r.voltage = (r.raw / 4095.0f) * 3.3f;
+  return r;
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(200);
+
+  // Setup ADC characteristics (ESP32)
+  #ifdef ARDUINO_ARCH_ESP32
+  // Attenuation: ADC_11db for full-scale roughly 3.3V
+  analogSetPinAttenuation(TDS_PIN, ADC_11db);
+  analogSetPinAttenuation(TURB_PIN, ADC_11db);
+  #endif
+
+  connectWiFi();
+
+  mqtt.setServer(mqtt_server, mqtt_port);
+
+  sensors.begin();
+  Serial.println("DS18B20 init done");
+}
+
+void loop() {
+  if (WiFi.status() != WL_CONNECTED) connectWiFi();
+  if (!mqtt.connected()) reconnectMQTT();
+  mqtt.loop();
+
+  unsigned long now = millis();
+  if (now - lastPublish >= publishInterval) {
+    lastPublish = now;
+
+    // Read sensors
+    AnalogReading tds = readAnalogSafe(TDS_PIN);
+    AnalogReading turb = readAnalogSafe(TURB_PIN);
+
+    // Read DS18B20
+    sensors.requestTemperatures();
+    float tempC = sensors.getTempCByIndex(0); // first device on bus
+    if (tempC == DEVICE_DISCONNECTED_C) {
+      Serial.println("DS18B20 read failed");
+      tempC = NAN;
+    }
+
+    // Build JSON manually
+    String payload = "{";
+    payload += "\"tds_raw\":" + String(tds.raw) + ",";
+    payload += "\"tds_volt\":" + String(tds.voltage, 3) + ",";
+    payload += "\"turb_raw\":" + String(turb.raw) + ",";
+    payload += "\"turb_volt\":" + String(turb.voltage, 3) + ",";
+    if (!isnan(tempC)) payload += "\"temp_c\":" + String(tempC, 2);
+    else payload += "\"temp_c\":null";
+    payload += "}";
+
+    Serial.println("Publishing: " + payload);
+    if (!mqtt.publish(mqtt_topic, payload.c_str())) {
+      Serial.println("Publish failed, reconnecting MQTT");
+      reconnectMQTT();
+      mqtt.publish(mqtt_topic, payload.c_str());
+    }
+  }
+
+  delay(10);
+}
